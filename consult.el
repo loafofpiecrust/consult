@@ -200,6 +200,10 @@ You may want to add a function which pulses the current line, e.g.,
   '((t :inherit warning))
   "Face used for the narrowing indicator.")
 
+(defface consult-async-indicator
+  '((t :inherit consult-narrow-indicator))
+  "Face used for the async indicator.")
+
 (defface consult-key
   '((t :inherit font-lock-keyword-face))
   "Face used to highlight keys, e.g., in `consult-register'.")
@@ -575,6 +579,50 @@ FACE is the cursor face."
                 (list (consult--overlay (line-beginning-position) (line-end-position) 'face 'consult-preview-line)
                       (consult--overlay pos (1+ pos) 'face face)))))))))
 
+(cl-defstruct (consult--async (:constructor consult--async-make) (:copier nil))
+  (delay 0.1 :read-only) (cleanup #'ignore :read-only) -candidates (-status 'refresh))
+
+(defsubst consult--async-push (async candidates &optional done)
+  "Push CANDIDATES to ASYNC, optionally changing the status to 'done'."
+  (setf (consult--async--candidates async)
+        (if candidates
+            (nconc (consult--async--candidates async) candidates)
+          (consult--async--candidates async))
+        (consult--async--status async)
+        (if done 'done 'refresh)))
+
+(defun consult--async-install (async fun)
+  "Setup ASYNC for FUN."
+  (if (not (consult--async-p async)) (funcall fun)
+    (let ((win) (timer) (ov))
+      (setq timer
+            (run-with-timer
+             (consult--async-delay async) (consult--async-delay async)
+             (lambda ()
+               (when (consult--async--status async)
+                 (when (eq (consult--async--status async) 'done)
+                   (delete-overlay ov)
+                   (cancel-timer timer))
+                 (setf (consult--async--status async) nil)
+                 (when (and win (window-live-p win))
+                   (with-selected-window win
+                     (run-hooks 'consult--completion-refresh-hook)))))))
+      (minibuffer-with-setup-hook
+          (lambda ()
+            (setq ov (consult--overlay (- (minibuffer-prompt-end) 2) (- (minibuffer-prompt-end) 1)
+                                       'display "*" 'face 'consult-async-indicator))
+            (setq win (active-minibuffer-window)))
+        (unwind-protect
+            (funcall fun)
+          (delete-overlay ov)
+          (cancel-timer timer)
+          (funcall (consult--async-cleanup async)))))))
+
+(defmacro consult--with-async (async &rest body)
+  "Setup ASYNC for BODY."
+  (declare (indent 1))
+  `(consult--async-install ,async (lambda () ,@body)))
+
 (cl-defun consult--read (prompt candidates &key
                                 predicate require-match history default
                                 category initial preview narrow
@@ -596,12 +644,13 @@ PREVIEW is a preview function.
 NARROW is an alist of narrowing prefix strings and description."
   (ignore default-top)
   ;; supported types
-  (cl-assert (and (not (functionp candidates))    ;; no function support
-                  (or (not candidates)            ;; nil
-                      (obarrayp candidates)       ;; obarray
-                      (stringp (car candidates))  ;; string list
-                      (symbolp (car candidates))  ;; symbol list
-                      (consp (car candidates))))) ;; alist
+  (cl-assert (and (not (functionp candidates))      ;; no function support
+                  (or (consult--async-p candidates) ;; async table
+                      (not candidates)              ;; nil, empty list
+                      (obarrayp candidates)         ;; obarray
+                      (stringp (car candidates))    ;; string list
+                      (symbolp (car candidates))    ;; symbol list
+                      (consp (car candidates)))))   ;; alist
   (let* ((metadata
           `(metadata
             ,@(when category `((category . ,category)))
@@ -613,16 +662,22 @@ NARROW is an alist of narrowing prefix strings and description."
             (setq input (substring-no-properties str))
             (if (eq action 'metadata)
                 metadata
-              (complete-with-action action candidates str pred))))
-         (result (consult--with-preview
-                     (and preview
-                          (lambda (cand restore)
-                            (funcall preview (and cand (funcall lookup input candidates cand)) restore)))
-                   (consult--with-narrow narrow
-                     (completing-read prompt table
-                                      predicate require-match initial
-                                      (if (symbolp history) history (cadr history))
-                                      default)))))
+              (complete-with-action action
+                                    (if (consult--async-p candidates)
+                                        (consult--async--candidates candidates)
+                                      candidates)
+                                    str pred))))
+         (result
+          (consult--with-async candidates
+            (consult--with-preview
+                (and preview
+                     (lambda (cand restore)
+                       (funcall preview (and cand (funcall lookup input candidates cand)) restore)))
+              (consult--with-narrow narrow
+                (completing-read prompt table
+                                 predicate require-match initial
+                                 (if (symbolp history) history (cadr history))
+                                 default))))))
     (pcase-exhaustive history
       (`(:input ,var)
        (set var (cdr (symbol-value var)))
@@ -1680,7 +1735,10 @@ Prepend PREFIX in front of all items."
 
 (defun consult--icomplete-refresh ()
   "Refresh icomplete view."
-  (setq completion-all-sorted-completions nil))
+  ;; TODO ensure that scrolling works with async
+  (when icomplete-mode
+    (setq completion-all-sorted-completions nil)
+    (icomplete-exhibit)))
 
 (add-hook 'consult--completion-refresh-hook #'consult--icomplete-refresh)
 

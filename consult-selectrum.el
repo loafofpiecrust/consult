@@ -53,7 +53,11 @@
 (defun consult-selectrum--refresh ()
   "Refresh selectrum view."
   (when (eq completing-read-function #'selectrum-completing-read)
-    (selectrum-exhibit)))
+    ;; TODO async refresh hack!
+    (let ((old-index selectrum--current-candidate-index))
+      (selectrum-exhibit)
+      (setq selectrum--current-candidate-index old-index)
+      (selectrum--minibuffer-post-command-hook))))
 
 (add-hook 'consult--completion-refresh-hook #'consult-selectrum--refresh)
 
@@ -64,7 +68,10 @@
             (lambda (fun prompt candidates &rest opts)
               (minibuffer-with-setup-hook
                   (lambda ()
-                    (setq-local selectrum--move-default-candidate-p (plist-get opts :default-top)))
+                    (setq-local selectrum--move-default-candidate-p (plist-get opts :default-top))
+                    ;; Fix height for async completion table
+                    (when (consult--async-p candidates)
+                      (setq-local selectrum-fix-minibuffer-height t)))
                 (apply fun prompt candidates opts))))
 
 (provide 'consult-selectrum)
