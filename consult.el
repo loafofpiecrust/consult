@@ -581,13 +581,17 @@ FACE is the cursor face."
 
 (defun consult--async-sink ()
   "Create ASYNC function."
-  (let ((candidates))
+  (let ((candidates)
+        (win (active-minibuffer-window)))
     (lambda (action)
       (pcase-exhaustive action
         ('candidates  candidates)
-        ('setup       nil)
+        ('setup       (setq win (active-minibuffer-window)))
         ('destroy     nil)
         ('done        nil)
+        ('refresh     (when (and win (window-live-p win))
+                        (with-selected-window win
+                          (run-hooks 'consult--completion-refresh-hook))))
         ((pred listp) (setq candidates (nconc candidates action)))))))
 
 (defun consult--async-process (async cmd)
@@ -632,19 +636,28 @@ CMD is the command argument list."
         ((or 'destroy 'done) (delete-overlay ov)))
       (funcall async action))))
 
-(defun consult--async-timer (async &optional delay)
+(defun consult--async-refresh (async &optional delay)
   "Add refresh timer to ASYNC.
 
-DELAY is the refresh delay, default 0.1s."
-  (let ((timer)
-        (status 'refresh)
-        (delay (or delay 0.1)))
-    (lambda (action)
-      (pcase action
-        ((pred listp) (setq status 'refresh))
-        ('done        (setq status 'done))
-        ('setup
-         (let ((win (active-minibuffer-window)))
+DELAY is the refresh delay, default 0.1.
+      The delay can also be 0 in order to trigger an immediate
+      refreshing when candidates are pushed."
+  (if (equal delay 0)
+      ;; Immediate refresher
+      (lambda (action)
+        (pcase action
+          ((pred listp) (prog1 (funcall async action) (funcall async 'refresh)))
+          (_ (funcall async action))))
+      ;; Timer based refresher
+    (let ((timer)
+          (status 'refresh)
+          (delay (or delay 0.1)))
+      (lambda (action)
+        (pcase action
+          ((pred listp) (setq status 'refresh))
+          ('done        (setq status 'done))
+          ('destroy     (cancel-timer timer))
+          ('setup
            (setq timer
                  (run-with-timer
                   delay delay
@@ -653,14 +666,11 @@ DELAY is the refresh delay, default 0.1s."
                       (when (eq status 'done)
                         (cancel-timer timer))
                       (setq status nil)
-                      (when (and win (window-live-p win))
-                        (with-selected-window win
-                          (run-hooks 'consult--completion-refresh-hook)))))))))
-        ('destroy (cancel-timer timer)))
-      (funcall async action))))
+                      (funcall async 'refresh)))))))
+        (funcall async action)))))
 
 (defsubst consult--async-transform (async transform fun)
-  "Use FUN to TRANFORM candidates of ASYNC."
+  "Use FUN to TRANSFORM candidates of ASYNC."
   (lambda (action)
     (funcall async (if (listp action) (funcall transform fun action) action))))
 
