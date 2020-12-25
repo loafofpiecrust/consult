@@ -579,45 +579,98 @@ FACE is the cursor face."
                 (list (consult--overlay (line-beginning-position) (line-end-position) 'face 'consult-preview-line)
                       (consult--overlay pos (1+ pos) 'face face)))))))))
 
-(cl-defun consult--async (&key (delay 0.1) (cleanup #'ignore))
-  "Create ASYNC function with DELAY and CLEANUP function."
-  (let ((candidates)
-        (status))
-    (lambda (arg)
-      (pcase-exhaustive arg
-        ('delay       delay)
+(defun consult--async-sink ()
+  "Create ASYNC function."
+  (let ((candidates))
+    (lambda (action)
+      (pcase-exhaustive action
         ('candidates  candidates)
-        ('status      (prog1 status (setq status nil)))
-        ('cleanup     (funcall cleanup))
+        ('setup       nil)
+        ('destroy     nil)
+        ('done        nil)
+        ((pred listp) (setq candidates (nconc candidates action)))))))
+
+(defun consult--async-process (async cmd)
+  "Process source for ASYNC.
+
+CMD is the command argument list."
+  (let* ((rest) (proc))
+    (lambda (action)
+      (pcase action
+        ('setup
+         (setq proc (make-process
+                     :name "consult-async"
+                     :stderr " *Consult Async Stderr*"
+                     :noquery t
+                     :command cmd
+                     :filter
+                     (lambda (_ out)
+                       (let ((lines (split-string out "\n")))
+                         (if (cdr lines)
+                             (progn
+                               (setcar lines (concat rest (car lines)))
+                               (setq rest (car (last lines)))
+                               (funcall async (nbutlast lines)))
+                           (setq rest (concat rest (car lines))))))
+                     :sentinel
+                     (lambda (_ event)
+                       (when (and rest (string= event "finished\n"))
+                         (funcall async (list rest))
+                         (funcall async 'done))))))
+        ('destroy (ignore-errors (kill-process proc))))
+      (funcall async action))))
+
+(defun consult--async-indicator (async)
+  "Add indicator to ASYNC."
+  (let ((ov))
+    (lambda (action)
+      (pcase action
+        ('setup
+         (setq ov (consult--overlay (- (minibuffer-prompt-end) 2) (- (minibuffer-prompt-end) 1)
+                                    'display "*" 'face 'consult-async-indicator)))
+        ((or 'destroy 'done) (delete-overlay ov)))
+      (funcall async action))))
+
+(defun consult--async-timer (async &optional delay)
+  "Add refresh timer to ASYNC.
+
+DELAY is the refresh delay, default 0.1s."
+  (let ((timer)
+        (status 'refresh)
+        (delay (or delay 0.1)))
+    (lambda (action)
+      (pcase action
+        ((pred listp) (setq status 'refresh))
         ('done        (setq status 'done))
-        ((pred listp) (setq candidates (nconc candidates arg)
-                            status 'refresh))))))
+        ('setup
+         (let ((win (active-minibuffer-window)))
+           (setq timer
+                 (run-with-timer
+                  delay delay
+                  (lambda ()
+                    (when status
+                      (when (eq status 'done)
+                        (cancel-timer timer))
+                      (setq status nil)
+                      (when (and win (window-live-p win))
+                        (with-selected-window win
+                          (run-hooks 'consult--completion-refresh-hook)))))))))
+        ('destroy (cancel-timer timer)))
+      (funcall async action))))
+
+(defun consult--async-transform (async fun)
+  "Use FUN to transform candidates of ASYNC."
+  (lambda (action)
+    (funcall async (if (listp action) (mapcar fun action) action))))
 
 (defun consult--async-install (async fun)
   "Setup ASYNC for FUN."
   (if (not (functionp async)) (funcall fun)
-    (let ((win) (timer) (ov))
-      (setq timer
-            (run-with-timer
-             (funcall async 'delay) (funcall async 'delay)
-             (lambda ()
-               (when-let (status (funcall async 'status))
-                 (when (eq status 'done)
-                   (delete-overlay ov)
-                   (cancel-timer timer))
-                 (when (and win (window-live-p win))
-                   (with-selected-window win
-                     (run-hooks 'consult--completion-refresh-hook)))))))
-      (minibuffer-with-setup-hook
-          (lambda ()
-            (setq ov (consult--overlay (- (minibuffer-prompt-end) 2) (- (minibuffer-prompt-end) 1)
-                                       'display "*" 'face 'consult-async-indicator))
-            (setq win (active-minibuffer-window)))
-        (unwind-protect
-            (funcall fun)
-          (delete-overlay ov)
-          (cancel-timer timer)
-          (funcall async 'cleanup))))))
+    (minibuffer-with-setup-hook
+        (lambda () (funcall async 'setup))
+      (unwind-protect
+          (funcall fun)
+        (funcall async 'destroy)))))
 
 (defmacro consult--with-async (async &rest body)
   "Setup ASYNC for BODY."
