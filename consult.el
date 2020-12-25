@@ -238,6 +238,7 @@ You may want to add a function which pulses the current line, e.g.,
 
 ;;;; History variables
 
+(defvar consult--grep-history nil)
 (defvar consult--line-history nil)
 (defvar consult--apropos-history nil)
 (defvar consult--theme-history nil)
@@ -608,7 +609,7 @@ CMD is the command argument list."
       (pcase action
         ('setup
          (setq proc (make-process
-                     :name "consult-async"
+                     :name (car cmd)
                      :stderr " *Consult Async Stderr*"
                      :noquery t
                      :command cmd
@@ -1809,26 +1810,46 @@ CAND is the selected candidate."
           (forward-char (caddr loc))
           (point-marker))))))
 
-(defun consult--grep-async (regexp)
-  "Async table for grep REGEXP."
+(defvar consult--git-grep '("git" "grep" "--color=never" "-n" "-e"))
+(defvar consult--grep '("grep" "--color=never" "--exclude-dir=.git" "-n" "-r" "-e"))
+(defvar consult--ripgrep '("rg" "--line-buffered" "--no-heading" "--color=never" "-n" "." "-e"))
+
+(defun consult--grep-async (cmd regexp)
+  "Async table for grep CMD searching for REGEXP."
   (thread-first (consult--async-sink)
     (consult--async-refresh)
     (consult--async-indicator)
     (consult--async-transform consult--grep-matches regexp)
-    ;;(consult--async-process `("grep" "--color=never" "--exclude-dir=.git" "-n" "-r" "-e" ,regexp))
-    (consult--async-process `("git" "grep" "--color=never" "-n" "-e" ,regexp))))
+    (consult--async-process `(,@cmd ,regexp))))
 
-;;;###autoload
-(defun consult-grep (regexp)
-  "Grep for REGEXP in current directory."
-  (interactive "sGrep: ")
+(defun consult--grep (cmd regexp)
+  "Run grep CMD with REGEXP in current directory."
   (consult--jump
    (consult--read
-    "Go to match: " (consult--grep-async regexp)
+    "Go to match: " (consult--grep-async cmd regexp)
     :lookup #'consult--grep-marker
     :preview (consult--preview-position)
     :require-match t
+    :history '(:input consult--grep-history)
     :sort nil)))
+
+;;;###autoload
+(defun consult-grep (regexp)
+  "Search for REGEXP with grep."
+  (interactive "sGrep: ")
+  (consult--grep consult--grep regexp))
+
+;;;###autoload
+(defun consult-git-grep (regexp)
+  "Search for REGEXP with grep."
+  (interactive "sGit Grep: ")
+  (consult--grep consult--git-grep regexp))
+
+;;;###autoload
+(defun consult-ripgrep (regexp)
+  "Search for REGEXP with rg."
+  (interactive "sRipgrep: ")
+  (consult--grep consult--ripgrep regexp))
 
 ;;;; default completion-system support for preview
 
