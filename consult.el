@@ -212,9 +212,9 @@ You may want to add a function which pulses the current line, e.g.,
   '((t :inherit consult-key))
   "Face used to highlight imenu prefix in `consult-imenu'.")
 
-(defface consult-location
-  '((t :inherit consult-file))
-  "Face used to highlight locations in `consult-global-mark'.")
+(defface consult-line-number
+  '((t :inherit consult-key))
+  "Face used to highlight location line in `consult-global-mark'.")
 
 (defface consult-file
   '((t :inherit font-lock-function-name-face))
@@ -232,7 +232,7 @@ You may want to add a function which pulses the current line, e.g.,
   '((t :inherit font-lock-keyword-face))
   "Face used to highlight views in `consult-buffer'.")
 
-(defface consult-line-number
+(defface consult-line-number-prefix
   '((t :inherit line-number))
   "Face used to highlight line numbers in selections.")
 
@@ -282,6 +282,12 @@ Size of private unicode plane b.")
   "Active preview function.")
 
 ;;;; Helper functions
+
+(defsubst consult--format-location (file line)
+  "Format location string FILE:LINE."
+  (concat
+   (propertize file 'face 'consult-file) ":"
+   (propertize (number-to-string line) 'face 'consult-line-number)))
 
 (defun consult--line-position (line)
   "Compute position from LINE number."
@@ -668,18 +674,21 @@ DELAY is the refresh delay, default 0.1.
                       (funcall async 'refresh)))))))
         (funcall async action)))))
 
-(defsubst consult--async-transform (async transform fun)
+(defmacro consult--async-transform (async &rest transform)
   "Use FUN to TRANSFORM candidates of ASYNC."
-  (lambda (action)
-    (funcall async (if (listp action) (funcall transform fun action) action))))
+  (let ((async-var (make-symbol "async"))
+        (action-var (make-symbol "action")))
+    `(let ((,async-var ,async))
+       (lambda (,action-var)
+         (funcall ,async-var (if (listp ,action-var) (,@transform ,action-var) ,action-var))))))
 
 (defun consult--async-map (async fun)
   "Map candidates of ASYNC by FUN."
-  (consult--async-transform async #'mapcar fun))
+  (consult--async-transform async mapcar fun))
 
 (defun consult--async-filter (async fun)
   "Filter candidates of ASYNC by FUN."
-  (consult--async-transform async #'seq-filter fun))
+  (consult--async-transform async seq-filter fun))
 
 (defun consult--async-install (async fun)
   "Setup ASYNC for FUN."
@@ -773,7 +782,7 @@ NARROW is an alist of narrowing prefix strings and description."
                (make-string (- width (length line)) 32)
                line
                " ")
-              'face 'consult-line-number))
+              'face 'consult-line-number-prefix))
 
 (defun consult--add-line-number (max-line candidates)
   "Add line numbers to unformatted CANDIDATES as prefix.
@@ -944,8 +953,7 @@ The alist contains (string . position) pairs."
   "Return alist of lines containing markers.
 The alist contains (string . position) pairs."
   (consult--forbid-minibuffer)
-  (let* ((max-line 0)
-         (max-name 0)
+  (let* ((max-loc 0)
          (candidates))
     (save-excursion
       (dolist (marker global-mark-ring)
@@ -959,20 +967,18 @@ The alist contains (string . position) pairs."
                 (let* ((line (line-number-at-pos pos consult-line-numbers-widen))
                        (begin (line-beginning-position))
                        (end (line-end-position))
-                       (name (buffer-name)))
-                  (setq max-name (max (length name) max-name)
-                        max-line (max line max-line))
+                       (loc (consult--format-location (buffer-name buf) line)))
+                  (setq max-loc (max (length loc) max-loc))
                   (consult--fontify-region begin end)
-                  (push (cons (list name line (consult--region-with-cursor begin end marker)) marker)
+                  (push (cons (cons loc (consult--region-with-cursor begin end marker)) marker)
                         candidates))))))))
     (unless candidates
       (user-error "No global marks"))
-    (let ((fmt (format "%%%ds:%%-%dd" max-name (length (number-to-string max-line)))))
-      (dolist (cand candidates (nreverse (consult--remove-dups candidates #'car)))
-        (pcase-let ((`(,name ,line ,str) (car cand)))
-          (setcar cand (concat (consult--unique (cdr cand) "")
-                               (propertize (format fmt name line) 'face 'consult-location)
-                               "   " str)))))))
+    (dolist (cand candidates (nreverse (consult--remove-dups candidates #'car)))
+      (setcar cand (concat (consult--unique (cdr cand) "")
+                           (caar cand)
+                           (make-string (+ 3 (- max-loc (length (caar cand)))) 32)
+                           (cdar cand))))))
 
 ;;;###autoload
 (defun consult-global-mark ()
@@ -1761,6 +1767,67 @@ Prepend PREFIX in front of all items."
       :history 'consult--imenu-history
       :sort nil))
     (run-hooks 'consult-after-jump-hook)))
+
+(defun consult--grep-format (cand)
+  "Format grep match CAND."
+  (pcase-let* ((`(,file ,line ,match) cand)
+               (loc (consult--format-location file line))
+               (len (length loc)))
+    (cons (concat loc (make-string (+ 3 (max 0 (- 60 (length loc)))) 32) match)
+          (cons file line))))
+
+;; TODO determine column and highlight matching string!
+(defun consult--grep-matches (lines)
+  "Find grep match in LINES."
+  (pcase-let ((`(,regexp ,file-group ,line-group . ,_) (car grep-regexp-alist)))
+    (save-match-data
+      (delq nil
+            (mapcar
+             (lambda (str)
+               (when (string-match regexp str)
+                 (list (match-string file-group str)
+                       (string-to-number (match-string line-group str))
+                       (substring str (match-end 0)))))
+             lines)))))
+
+;; TODO move to matching column
+(defun consult--grep-marker (_input candidates cand)
+  "Grep candidate to marker.
+
+CANDIDATES is the candidate list.
+CAND is the selected candidate."
+  (when-let (loc (cdr (assoc cand (funcall candidates 'candidates))))
+    (with-current-buffer
+        (or (get-file-buffer (car loc))
+            (let ((find-file-suppress-same-file-warnings t))
+              (find-file-noselect (car loc))))
+      (save-restriction
+        (widen)
+        (save-excursion
+          (goto-char (point-min))
+          (forward-line (- (cdr loc) 1))
+          (point-marker))))))
+
+(defun consult--grep-async (regexp)
+  "Async table for grep REGEXP."
+  (thread-first (consult--async-sink)
+    (consult--async-refresh)
+    (consult--async-indicator)
+    (consult--async-map #'consult--grep-format)
+    (consult--async-transform consult--grep-matches)
+    (consult--async-process `("grep" "--exclude-dir=.git" "-n" "-r" "-e" ,regexp))))
+
+;;;###autoload
+(defun consult-grep (regexp)
+  "Grep for REGEXP in current directory."
+  (interactive "sGrep: ")
+  (consult--jump
+   (consult--read
+    "Go to match: " (consult--grep-async regexp)
+    :lookup #'consult--grep-marker
+    :preview (consult--preview-position)
+    :require-match t
+    :sort nil)))
 
 ;;;; default completion-system support for preview
 
