@@ -581,15 +581,14 @@ FACE is the cursor face."
 
 (defun consult--async-sink ()
   "Create ASYNC function."
-  (let ((candidates)
-        (win (active-minibuffer-window)))
+  (let ((candidates))
     (lambda (action)
       (pcase-exhaustive action
         ('candidates  candidates)
-        ('setup       (setq win (active-minibuffer-window)))
+        ('setup       nil)
         ('destroy     nil)
         ('done        nil)
-        ('refresh     (when (and win (window-live-p win))
+        ('refresh     (when-let (win (active-minibuffer-window))
                         (with-selected-window win
                           (run-hooks 'consult--completion-refresh-hook))))
         ((pred listp) (setq candidates (nconc candidates action)))))))
