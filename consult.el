@@ -1768,29 +1768,29 @@ Prepend PREFIX in front of all items."
       :sort nil))
     (run-hooks 'consult-after-jump-hook)))
 
-(defun consult--grep-format (cand)
-  "Format grep match CAND."
-  (pcase-let* ((`(,file ,line ,match) cand)
-               (loc (consult--format-location file line))
-               (len (length loc)))
-    (cons (concat loc (make-string (+ 3 (max 0 (- 60 (length loc)))) 32) match)
-          (cons file line))))
-
-;; TODO determine column and highlight matching string!
-(defun consult--grep-matches (lines)
-  "Find grep match in LINES."
-  (pcase-let ((`(,regexp ,file-group ,line-group . ,_) (car grep-regexp-alist)))
+(defun consult--grep-matches (regexp lines)
+  "Find grep match for REGEXP in LINES."
+  (pcase-let ((`(,grep-regexp ,file-group ,line-group . ,_) (car grep-regexp-alist)))
     (save-match-data
       (delq nil
             (mapcar
              (lambda (str)
-               (when (string-match regexp str)
-                 (list (match-string file-group str)
-                       (string-to-number (match-string line-group str))
-                       (substring str (match-end 0)))))
+               (when (string-match grep-regexp str)
+                 (let* ((file (match-string file-group str))
+                        (line (string-to-number (match-string line-group str)))
+                        (match (substring str (match-end 0)))
+                        (col 0)
+                        (loc (consult--format-location file line)))
+                   (when (string-match regexp match)
+                     (setq col (match-beginning 0)
+                           match (concat (substring match 0 col)
+                                         (propertize (substring match col (match-end 0))
+                                                     'face 'consult-preview-cursor)
+                                         (substring match (match-end 0)))))
+                   (list (concat loc (make-string (+ 3 (max 0 (- 60 (length loc)))) 32) match)
+                         file line col))))
              lines)))))
 
-;; TODO move to matching column
 (defun consult--grep-marker (_input candidates cand)
   "Grep candidate to marker.
 
@@ -1805,7 +1805,8 @@ CAND is the selected candidate."
         (widen)
         (save-excursion
           (goto-char (point-min))
-          (forward-line (- (cdr loc) 1))
+          (forward-line (- (cadr loc) 1))
+          (forward-char (caddr loc))
           (point-marker))))))
 
 (defun consult--grep-async (regexp)
@@ -1813,8 +1814,7 @@ CAND is the selected candidate."
   (thread-first (consult--async-sink)
     (consult--async-refresh)
     (consult--async-indicator)
-    (consult--async-map #'consult--grep-format)
-    (consult--async-transform consult--grep-matches)
+    (consult--async-transform consult--grep-matches regexp)
     (consult--async-process `("grep" "--exclude-dir=.git" "-n" "-r" "-e" ,regexp))))
 
 ;;;###autoload
