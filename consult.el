@@ -1789,7 +1789,7 @@ Prepend PREFIX in front of all items."
                                                      'face 'consult-preview-cursor)
                                          (substring match (match-end 0)))))
                    (list (concat loc (make-string (+ 3 (max 0 (- 60 (length loc)))) 32) match)
-                         file line col))))
+                         (expand-file-name file) line col))))
              lines)))))
 
 (defun consult--grep-marker (_input candidates cand)
@@ -1803,16 +1803,16 @@ CAND is the selected candidate."
             (let ((find-file-suppress-same-file-warnings t))
               (find-file-noselect (car loc))))
       (save-restriction
-        (widen)
         (save-excursion
+          (widen)
           (goto-char (point-min))
           (forward-line (- (cadr loc) 1))
           (forward-char (caddr loc))
           (point-marker))))))
 
 (defvar consult--git-grep '("git" "grep" "--color=never" "-n" "-e"))
-(defvar consult--grep '("grep" "--color=never" "--exclude-dir=.git" "-n" "-r" "-e"))
-(defvar consult--ripgrep '("rg" "--line-buffered" "--no-heading" "--color=never" "-n" "." "-e"))
+(defvar consult--grep '("grep" "--line-buffered" "--color=never" "--exclude-dir=.git" "-n" "-r" "-e"))
+(defvar consult--ripgrep '("rg" "--line-buffered" "--color=never" "--no-heading" "-n" "." "-e"))
 
 (defun consult--grep-async (cmd regexp)
   "Async table for grep CMD searching for REGEXP."
