@@ -1815,7 +1815,8 @@ CAND is the selected candidate."
     (consult--async-refresh)
     (consult--async-indicator)
     (consult--async-transform consult--grep-matches regexp)
-    (consult--async-process `("grep" "--exclude-dir=.git" "-n" "-r" "-e" ,regexp))))
+    ;;(consult--async-process `("grep" "--color=never" "--exclude-dir=.git" "-n" "-r" "-e" ,regexp))
+    (consult--async-process `("git" "grep" "--color=never" "-n" "-e" ,regexp))))
 
 ;;;###autoload
 (defun consult-grep (regexp)
