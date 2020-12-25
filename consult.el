@@ -1804,6 +1804,7 @@ Prepend PREFIX in front of all items."
 
 (add-hook 'consult-preview-mode-hook #'consult--icomplete-preview-setup)
 
+(declare-function icomplete-exhibit "icomplete")
 (defun consult--icomplete-refresh ()
   "Refresh icomplete view."
   ;; TODO ensure that scrolling works with async
