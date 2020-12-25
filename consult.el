@@ -594,7 +594,7 @@ FACE is the cursor face."
   "Process source for ASYNC.
 
 CMD is the command argument list."
-  (let* ((rest) (proc))
+  (let* ((rest "") (proc))
     (lambda (action)
       (pcase action
         ('setup
@@ -614,8 +614,9 @@ CMD is the command argument list."
                            (setq rest (concat rest (car lines))))))
                      :sentinel
                      (lambda (_ event)
-                       (when (and rest (string= event "finished\n"))
-                         (funcall async (list rest))
+                       (when (string= event "finished\n")
+                         (unless (string= rest "")
+                           (funcall async (list rest)))
                          (funcall async 'done))))))
         ('destroy (ignore-errors (kill-process proc))))
       (funcall async action))))
@@ -658,10 +659,18 @@ DELAY is the refresh delay, default 0.1s."
         ('destroy (cancel-timer timer)))
       (funcall async action))))
 
-(defun consult--async-transform (async fun)
-  "Use FUN to transform candidates of ASYNC."
+(defsubst consult--async-transform (async transform fun)
+  "Use FUN to TRANFORM candidates of ASYNC."
   (lambda (action)
-    (funcall async (if (listp action) (mapcar fun action) action))))
+    (funcall async (if (listp action) (funcall transform fun action) action))))
+
+(defun consult--async-map (async fun)
+  "Map candidates of ASYNC by FUN."
+  (consult--async-transform async #'mapcar fun))
+
+(defun consult--async-filter (async fun)
+  "Filter candidates of ASYNC by FUN."
+  (consult--async-transform async #'seq-filter fun))
 
 (defun consult--async-install (async fun)
   "Setup ASYNC for FUN."
