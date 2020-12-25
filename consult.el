@@ -579,31 +579,32 @@ FACE is the cursor face."
                 (list (consult--overlay (line-beginning-position) (line-end-position) 'face 'consult-preview-line)
                       (consult--overlay pos (1+ pos) 'face face)))))))))
 
-(cl-defstruct (consult--async (:constructor consult--async-make) (:copier nil))
-  (delay 0.1 :read-only) (cleanup #'ignore :read-only) -candidates (-status 'refresh))
-
-(defsubst consult--async-push (async candidates &optional done)
-  "Push CANDIDATES to ASYNC, optionally changing the status to 'done'."
-  (setf (consult--async--candidates async)
-        (if candidates
-            (nconc (consult--async--candidates async) candidates)
-          (consult--async--candidates async))
-        (consult--async--status async)
-        (if done 'done 'refresh)))
+(cl-defun consult--async (&key (delay 0.1) (cleanup #'ignore))
+  "Create ASYNC function with DELAY and CLEANUP function."
+  (let ((candidates)
+        (status))
+    (lambda (arg)
+      (pcase-exhaustive arg
+        ('delay       delay)
+        ('candidates  candidates)
+        ('status      (prog1 status (setq status nil)))
+        ('cleanup     (funcall cleanup))
+        ('done        (setq status 'done))
+        ((pred listp) (setq candidates (nconc candidates arg)
+                            status 'refresh))))))
 
 (defun consult--async-install (async fun)
   "Setup ASYNC for FUN."
-  (if (not (consult--async-p async)) (funcall fun)
+  (if (not (functionp async)) (funcall fun)
     (let ((win) (timer) (ov))
       (setq timer
             (run-with-timer
-             (consult--async-delay async) (consult--async-delay async)
+             (funcall async 'delay) (funcall async 'delay)
              (lambda ()
-               (when (consult--async--status async)
-                 (when (eq (consult--async--status async) 'done)
+               (when-let (status (funcall async 'status))
+                 (when (eq status 'done)
                    (delete-overlay ov)
                    (cancel-timer timer))
-                 (setf (consult--async--status async) nil)
                  (when (and win (window-live-p win))
                    (with-selected-window win
                      (run-hooks 'consult--completion-refresh-hook)))))))
@@ -616,7 +617,7 @@ FACE is the cursor face."
             (funcall fun)
           (delete-overlay ov)
           (cancel-timer timer)
-          (funcall (consult--async-cleanup async)))))))
+          (funcall async 'cleanup))))))
 
 (defmacro consult--with-async (async &rest body)
   "Setup ASYNC for BODY."
@@ -644,13 +645,12 @@ PREVIEW is a preview function.
 NARROW is an alist of narrowing prefix strings and description."
   (ignore default-top)
   ;; supported types
-  (cl-assert (and (not (functionp candidates))      ;; no function support
-                  (or (consult--async-p candidates) ;; async table
-                      (not candidates)              ;; nil, empty list
-                      (obarrayp candidates)         ;; obarray
-                      (stringp (car candidates))    ;; string list
-                      (symbolp (car candidates))    ;; symbol list
-                      (consp (car candidates)))))   ;; alist
+  (cl-assert (or (functionp candidates)     ;; async table
+                 (not candidates)           ;; nil, empty list
+                 (obarrayp candidates)      ;; obarray
+                 (stringp (car candidates)) ;; string list
+                 (symbolp (car candidates)) ;; symbol list
+                 (consp (car candidates)))) ;; alist
   (let* ((metadata
           `(metadata
             ,@(when category `((category . ,category)))
@@ -663,8 +663,8 @@ NARROW is an alist of narrowing prefix strings and description."
             (if (eq action 'metadata)
                 metadata
               (complete-with-action action
-                                    (if (consult--async-p candidates)
-                                        (consult--async--candidates candidates)
+                                    (if (functionp candidates)
+                                        (funcall candidates 'candidates)
                                       candidates)
                                     str pred))))
          (result

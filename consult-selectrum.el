@@ -70,7 +70,7 @@
                   (lambda ()
                     (setq-local selectrum--move-default-candidate-p (plist-get opts :default-top))
                     ;; Fix height for async completion table
-                    (when (consult--async-p candidates)
+                    (when (functionp candidates)
                       (setq-local selectrum-fix-minibuffer-height t)))
                 (apply fun prompt candidates opts))))
 
